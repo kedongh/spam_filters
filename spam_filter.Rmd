@@ -1,0 +1,607 @@
+---
+title: "415project"
+output: html_document
+---
+
+## This project is about spam detection.
+## Group member: Kedong He, Xinchen Rao
+
+# Load the data
+# Data source: Center for Machine Learning and Intelligent Systems at the University of California, Irvine
+
+```{r}
+url <- "https://archive.ics.uci.edu/ml/machine-learning-databases/00228/smsspamcollection.zip"
+
+if (!file.exists("smsspamcollection.zip")) 
+  {
+  download.file(url=url, destfile="smsspamcollection.zip", method="curl")
+  }
+unzip("smsspamcollection.zip")
+
+data_text <- read.delim("SMSSpamCollection", sep="\t", header=F, colClasses="character", quote="")
+```
+
+
+```{r}
+summary(data_text)
+```
+
+
+```{r}
+head(data_text)
+```
+
+
+# Preprocess the data (clean the data)
+# contribution: Kedong He
+
+```{r}
+# Rename the column for better understanding
+colnames(data_text) <- c("Class", "Text")
+```
+
+
+```{r}
+data_text$Class <- factor(data_text$Class)
+prop.table(table(data_text$Class))
+```
+
+```{r}
+# Here are two important packages we need focusing on text cleaning and further model.
+
+install.packages("tm")
+install.packages("SnowballC")
+```
+
+```{r}
+library("tm")
+library("SnowballC")
+```
+
+```{r}
+# Store all of texts in the vector, denoted as "corpus"
+corpus <- VCorpus(VectorSource(data_text$Text))
+
+# turn all of upper letters to lower letters.
+corpus <- tm_map(corpus, content_transformer(tolower))
+
+# remove all of numbers.
+corpus <- tm_map(corpus, removeNumbers)
+
+# remove all of punctuations
+corpus <- tm_map(corpus, removePunctuation)
+
+# remove all of stop words.
+corpus <- tm_map(corpus, removeWords, stopwords("english"))
+
+# stem words in a text document using Porter's stemming algorithm
+corpus <- tm_map(corpus, stemDocument)
+
+# fix the number of whitespace between any of two ajacent words is 1
+corpus <- tm_map(corpus, stripWhitespace)
+```
+
+```{r}
+# show the example of cleanin the data
+
+print("Before cleaning data")
+data_text$Text[1]
+print("After cleaning data")
+as.character(corpus[[1]])
+```
+
+
+
+# Create the Bag of Words (BOW) for the model
+# contribution: Kedong He
+
+```{r}
+# Here, bow is a 2D matrix. The number of rows represent the number of sentences, and the number of columns represent the total number of words in the whole corpus.
+
+bow <- DocumentTermMatrix(corpus)
+bow
+dim(bow)
+
+# The original matrix is too sparse, which maybe computationally expensive and the rank is too deficient.
+bow <- removeSparseTerms(bow, 0.999)
+bow
+dim(bow)
+```
+
+```{r}
+# The frequency of the word, we think, may not matter so much. We may need to convert the frequency to YES/NO label. 
+
+convert_func <- function(x) {
+  y <- ifelse(x > 0, 1, 0)
+  y <- factor(y, levels = c(0, 1), labels = c("No", "Yes"))
+}
+
+data <- apply(bow, 2, convert_func)
+data <- as.data.frame(as.matrix(data))
+```
+
+
+
+```{r}
+# Now, we focus on some words that appear frequently in the corpus and set the rule that once if the number of documents where the word appears is greater than 60, that word is thought as the frequent word.
+
+freq <- sort(colSums(as.matrix(bow)), decreasing = TRUE)
+
+findFreqTerms(bow, lowfreq = 60)
+```
+
+
+```{r}
+# Visualize the frequency of words
+# Here we need "ggplot2" and "wordcloud" packages to visualize.
+install.packages("ggplot2")
+install.packages("wordcloud")
+install.packages("RColorBrewer")
+```
+
+
+```{r}
+library(ggplot2)
+
+word_freq <- data.frame(word = names(freq), freq = freq)
+
+p <- ggplot(subset(word_freq, freq > 100), aes(x = reorder(word, -freq), y = freq)) +
+  geom_bar(stat = "identity") +
+  theme(axis.text.x=element_text(angle=45, hjust=1))
+
+p
+
+# From the plot, we find the word "call" appears the most frequently
+
+library(wordcloud)
+library(RColorBrewer)
+set.seed(1234)
+
+word_cloud <- wordcloud(words = word_freq$word, freq = word_freq$freq, min.freq = 1,
+                        max.words = 150, random.order = FALSE, rot.per = 0.35,
+                        colors = brewer.pal(8, "Dark2"))
+```
+
+# Add the Class variables to the dataset
+```{r}
+data$Class <- data_text$Class
+str(data$Class)
+```
+
+## Data Split: 70% as training and 30% as test
+```{r}
+
+# split the data into training data (70%) and test data (30%)
+set.seed(123)
+split <- sample(2, nrow(data), prob = c(0.70, 0.30), replace = TRUE)
+train_set <- data[split == 1, ]
+test_set <- data[split ==2, ]
+```
+
+
+# Logistics Regression
+# Contribution: Rudy Rao
+
+```{r}
+# require(ISLR)
+convert_func_01 <- function(x) {
+  y <- ifelse(x == "Yes", 1, 0)
+}
+
+train_set_logt <- apply(train_set[,-1210], 2, convert_func_01)
+train_set_logt <- as.data.frame(as.matrix(train_set_logt))
+train_set_logt <- cbind(train_set_logt,Class=train_set$Class)
+
+test_set_01 <- apply(test_set[,-1210], 2, convert_func_01)
+test_set_01 <- as.data.frame(as.matrix(test_set_01))
+test_set_01 <- cbind(test_set_01,Class=test_set$Class)
+
+
+# we need to record the training time.
+start_time <- Sys.time()
+mod_logt <- glm(Class~., data = train_set_logt, family = binomial)
+end_time <- Sys.time()
+
+end_time - start_time
+
+summary(mod_logt)
+```
+
+```{r}
+# install pkg for confusion matrix
+install.packages("caret")
+library(caret)
+```
+
+```{r}
+# we need to record the inference time.
+start_time <- Sys.time()
+lr_pred <- predict(mod_logt, newdata = test_set_01[-1210], type = "response")
+end_time <- Sys.time()
+
+end_time - start_time
+
+testPrediction =rep("spam",nrow(test_set))
+testPrediction[lr_pred>.5] = "ham"
+table(test_set$Class, lr_pred > 0.5)
+confusionMatrix(data = as.factor(testPrediction), reference = test_set$Class)
+```
+
+
+# Random Forest
+# Contribution: Kedong He
+
+```{r}
+# We have to install some pkgs first.
+install.packages("randomForest")
+```
+
+```{r}
+install.packages("e1071")
+```
+
+
+```{r}
+library(randomForest)
+
+# we need to record the training time
+start_time <- Sys.time()
+rf_classifier <- randomForest(x = train_set[-1210],
+                              y = train_set$Class,
+                              ntree = 300)
+end_time <- Sys.time()
+end_time - start_time
+
+rf_classifier
+```
+
+```{r}
+varImpPlot(rf_classifier)
+```
+
+
+
+```{r}
+library(caret)
+
+start_time <- Sys.time()
+rf_pred <- predict(rf_classifier, newdata = test_set[-1210])
+end_time <- Sys.time()
+
+end_time - start_time
+
+confusionMatrix(table(rf_pred, test_set$Class))
+```
+
+```{r}
+install.packages("ROCR")
+```
+
+
+
+```{r}
+# plot AUC-ROC curve of random forest model
+rf_pred_prob <- predict(rf_classifier, newdata = test_set[-1210],
+                        type = "prob")
+
+library(ROCR)
+
+rf_prediction <- prediction(as.vector(rf_classifier$votes[,2]), train_set$Class)
+
+rf_perf_AUC <- performance(rf_prediction, "auc")
+rf_AUC <- rf_perf_AUC@y.values[[1]]
+
+rf_perf_ROC <- performance(rf_prediction, "tpr", "fpr")
+plot(rf_perf_ROC, main = "ROC plot of Random Forest")
+text(0.5, 0.5, paste("AUC = ", format(rf_AUC, digits = 5, scientific = FALSE)))
+```
+
+
+
+## Support Vector Machine (SVM)
+# Contribution: Kedong He
+
+```{r}
+install.packages("e1071")
+```
+
+```{r}
+library(e1071)
+library(caret)
+start_time <- Sys.time()
+svm_classifier <- svm(Class ~ ., data = train_set,
+                      kernel = "linear",
+                      probability = TRUE)
+end_time <- Sys.time()
+end_time - start_time
+svm_classifier
+```
+
+```{r}
+svm_train_pred <- predict(svm_classifier, train_set)
+confusionMatrix(svm_train_pred, train_set$Class)
+```
+
+```{r}
+start_time <- Sys.time()
+svm_pred <- predict(svm_classifier, test_set)
+end_time <- Sys.time()
+end_time - start_time
+confusionMatrix(svm_pred, test_set$Class)
+```
+
+
+```{r}
+# plot AUC-ROC curve of svm with linear kernel
+# UNDO
+
+svm_test_pred_prob <- predict(svm_classifier, newdata = test_set[-1210],
+                               probability = TRUE)
+
+svm_prediction <- prediction(attributes(svm_test_pred_prob)$probabilities[,2], test_set$Class)
+svm_perf_AUC <- performance(svm_prediction, "auc")
+svm_AUC <- svm_perf_AUC@y.values[[1]]
+
+svm_perf_ROC <- performance(svm_prediction, "tpr", "fpr")
+plot(svm_perf_ROC, main = "ROC plot  of SVM with linear kernel")
+text(0.5, 0.5, paste("AUC = ", format(svm_AUC, digits = 5, scientific = FALSE)))
+
+```
+
+
+# We also wnt to try other kernels.
+
+```{r}
+# From the result of SVM, we can find that the data is not linearly separable. Adding kernel trick might be the solution.
+svm_gau_classifier <- svm(Class ~ .,
+                          data = train_set,
+                          kernel = "radial")
+svm_gau_classifier
+```
+
+```{r}
+svm_train_gau_pred <- predict(svm_gau_classifier, train_set)
+confusionMatrix(svm_train_gau_pred, train_set$Class)
+```
+
+```{r}
+svm_test_gau_pred <- predict(svm_gau_classifier, test_set)
+confusionMatrix(svm_test_gau_pred, test_set$Class)
+```
+
+# From the result above, we find adding gaussian kernel works badly as well.
+
+```{r}
+svm_sig_classifier <- svm(Class ~ .,
+                          data = train_set,
+                          kernel = "sigmoid")
+svm_sig_classifier
+```
+
+```{r}
+svm_sig_train_pred <- predict(svm_sig_classifier, train_set)
+confusionMatrix(svm_sig_train_pred, train_set$Class)
+```
+
+```{r}
+svm_sig_test_pred <- predict(svm_sig_classifier, test_set)
+confusionMatrix(svm_sig_test_pred, test_set$Class)
+```
+
+```{r}
+svm_poly_classifier <- svm(Class ~ .,
+                           data = train_set,
+                           nerkel = "polynomial")
+svm_poly_classifier
+```
+
+
+```{r}
+svm_poly_train_pred <- predict(svm_poly_classifier, train_set)
+confusionMatrix(svm_poly_train_pred, train_set$Class)
+```
+
+
+```{r}
+svm_poly_test_pred <- predict(svm_poly_classifier, test_set)
+confusionMatrix(svm_poly_test_pred, test_set$Class)
+```
+
+
+## Naive Baysian Classifier
+## Contribution: Kedong He
+
+```{r}
+control <- trainControl(method = "repeatedcv", number = 10,
+                        repeats = 3)
+system.time(nb_classifier <- naiveBayes(train_set, train_set$Class,
+                                        laplace = 1,
+                                        trControl = control, tuneLength = 7))
+```
+
+```{r}
+nb_train_pred <- predict(nb_classifier, type = "class", 
+                         newdata = train_set)
+confusionMatrix(nb_train_pred, train_set$Class)
+```
+
+
+```{r}
+start_time <- Sys.time()
+nb_test_pred <- predict(nb_classifier, type = "class",
+                        newdata = test_set)
+end_time <- Sys.time()
+end_time - start_time
+
+confusionMatrix(nb_test_pred, test_set$Class)
+```
+
+
+## ROC curves of Naive Bayesian and Logistic Regression
+## Contribution: Rudy Rao
+
+```{r}
+# plot AUC-ROC curve of Naive Baysian Model
+
+library(ROCR)
+nb_probs <- predict(nb_classifier, test_set[-1210], type="raw")
+nb_pred <- prediction(nb_probs[, "spam"], test_set[1210])
+nb_perf_ROC <- performance(nb_pred, measure='tpr', x.measure='fpr')
+
+
+nb_perf_AUC <- performance(nb_pred, 'auc')
+nb_AUC <- nb_perf_AUC@y.values[[1]]
+
+plot(nb_perf_ROC, main = "ROC plot of Naive Bayesian Classifier")
+text(0.5, 0.5, paste("AUC = ", format(nb_AUC, digits = 5, scientific = FALSE)))
+
+```
+
+
+
+
+```{r}
+# plot AUC-ROC curve of Logistics Regression Model
+#plot ROC
+install.packages('Metrics')
+library(ROCR)
+library(Metrics)
+```
+```{r}
+lr_pred  <- predict(mod_logt,newdata = test_set_01, type = "response")
+lr_pred <- ifelse(lr_pred > 0.5,1,0)
+lr_pr <- prediction(lr_pred,test_set_01[1210])
+lr_perf_ROC <- performance(lr_pr, measure = "tpr",x.measure = "fpr")
+
+
+lr_perf_AUC <- performance(lr_pr, 'auc')
+lr_AUC <- lr_perf_AUC@y.values[[1]]
+
+
+
+plot(lr_perf_ROC, main = "ROC plot of Logistic Regression")
+text(0.5, 0.5, paste("AUC = ", format(lr_AUC, digits = 5, scientific = FALSE)))
+
+```
+
+
+## Then, we merge four curves to have a more straightforward loooking.
+
+```{r}
+par(mfrow = c(2, 2))
+plot(svm_perf_ROC, main = "ROC plot  of SVM with linear kernel")
+text(0.5, 0.5, paste("AUC = ", format(svm_AUC, digits = 5, scientific = FALSE)))
+
+plot(svm_perf_ROC, main = "ROC plot  of SVM with linear kernel")
+text(0.5, 0.5, paste("AUC = ", format(svm_AUC, digits = 5, scientific = FALSE)))
+
+plot(nb_perf_ROC, main = "ROC plot of Naive Bayesian Classifier")
+text(0.5, 0.5, paste("AUC = ", format(nb_AUC, digits = 5, scientific = FALSE)))
+
+plot(lr_perf_ROC, main = "ROC plot of Logistic Regression")
+text(0.5, 0.5, paste("AUC = ", format(lr_AUC, digits = 5, scientific = FALSE)))
+```
+
+
+```{r}
+plot(rf_perf_ROC, col = 4, main = "ROC curves of different machine learning classifiers.")
+legend(0.6, 0.6, c("Random Forest", "SVM with linear kernel", "Naive Bayesian", "Logistic Regression"),
+       4:7)
+plot(svm_perf_ROC, col = 5, add = TRUE)
+plot(nb_perf_ROC, col = 6, add = TRUE)
+plot(lr_perf_ROC, col = 7, add = TRUE)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
